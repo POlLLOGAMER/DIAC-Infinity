@@ -376,7 +376,37 @@ async def validate_dvnr(req: ValidateDVNRReq):
         await col_dvnr.update_one({"_id": dv["_id"]}, {"$set": {"used": True, "win": False}})
         return {"result": "lose", "hash": h}
 
+class GenerateDVNRReq(BaseModel):
+    pubkey: str
+    passphrase: str
 
+@app.post("/generate_dvnr")
+async def generate_dvnr(req: GenerateDVNRReq):
+    # Buscar usuario
+    user = await col_users.find_one({"pubkey.pubkey": req.pubkey})
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    try:
+        priv = await decrypt_private_key(user['priv_enc'], req.passphrase)
+    except Exception:
+        raise HTTPException(403, "Bad passphrase")
+
+    # Generar DVNR válido: ejemplo simple usando hash con condición "0000" al inicio
+    for _ in range(100000):  # límite para no colgar servidor
+        new_dvnr = secrets.randbelow(10**12)
+        h = diac_infinite_hash(new_dvnr, priv)
+        if h.startswith("0000"):
+            # Guardar DVNR nuevo y no usado
+            try:
+                await col_dvnr.insert_one({"pubkey": req.pubkey, "dvnr": new_dvnr, "used": False})
+                return {"dvnr_number": new_dvnr}
+            except Exception:
+                # Si ya existe, seguir buscando
+                continue
+
+    raise HTTPException(500, "No valid DVNR found after many attempts")
+  
 @app.get("/chain", response_model=List[Dict[str, Any]])
 async def get_chain(limit: int = 50):
     cursor = col_chain.find({}).sort("_id", -1).limit(limit)
